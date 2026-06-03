@@ -1,7 +1,7 @@
 // editor_ui.js
 import { parseTownMap, serializeTownMap } from './pbs_parser.js';
 
-export async function mountTownMapEditor(ctx, host) {
+export function mountTownMapEditor(ctx, host) {
   const GRID_SIZE = 16;
   
   let regions = [];
@@ -16,11 +16,11 @@ export async function mountTownMapEditor(ctx, host) {
   let lastMouseX = 0;
   let lastMouseY = 0;
   let isDraggingPoint = false;
+  let isSpaceDown = false;
 
   host.innerHTML = `
     <div style="display: flex; flex-direction: column; height: 100%; background: var(--bg-primary); color: var(--text-primary); font-family: inherit;">
       
-      <!-- Toolbar -->
       <div style="padding: 8px; background: var(--bg-tertiary); border-bottom: 1px solid var(--border); display: flex; gap: 8px; align-items: center; z-index: 100;">
         <select id="tme-region-select" style="background: var(--input-bg); color: var(--text-primary); border: 1px solid var(--border); padding: 4px; border-radius: 4px; min-width: 150px; outline: none;"></select>
         <button id="tme-btn-save" style="background: var(--accent); color: var(--accent-text); border: none; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-weight: bold;">Save PBS</button>
@@ -29,17 +29,14 @@ export async function mountTownMapEditor(ctx, host) {
         </div>
       </div>
 
-      <!-- Main Area -->
       <div style="display: flex; flex: 1; overflow: hidden; position: relative;">
         
         <div id="tme-viewport" style="flex: 2; overflow: auto; background: var(--canvas-bg); position: relative; cursor: crosshair;">
           
-          <!-- SPACER: Fuerza a que aparezcan las barras de scroll al hacer zoom -->
           <div id="tme-layout-spacer" style="position: absolute; top: 0; left: 0; pointer-events: none;"></div>
 
-          <!-- CONTENEDOR ESCALADO: Todo aquí adentro se dibuja a escala 1:1 y el CSS hace el zoom -->
           <div id="tme-map-container" style="position: absolute; top: 0; left: 0; user-select: none; transform-origin: 0 0;">
-            <img id="tme-map-img" style="display: block; width: 100%; height: 100%;" alt="Town Map" draggable="false" />
+           <img id="tme-map-img" style="display: block; width: 100%; height: 100%; image-rendering: pixelated;" alt="Town Map" draggable="false" />
             
             <div id="tme-points-layer" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; 
               background-image: linear-gradient(to right, rgba(255,255,255,0.15) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,0.15) 1px, transparent 1px);
@@ -49,13 +46,11 @@ export async function mountTownMapEditor(ctx, host) {
 
         </div>
 
-        <!-- Tooltip-->
         <div id="tme-tooltip" style="display: none; position: absolute; background: rgba(0,0,0,0.85); 
         color: #fff; padding: 6px 10px; border-radius: 4px; font-size: 11px; pointer-events: none; z-index: 1000; 
         box-shadow: 0 2px 8px rgba(0,0,0,0.5); white-space: nowrap;">
         </div>
 
-        <!-- Properties Sidebar -->
         <div style="flex: 1; min-width: 250px; max-width: 300px; border-left: 1px solid var(--border); padding: 16px; background: var(--bg-secondary); overflow-y: auto; z-index: 100;">
           <div id="tme-properties"></div>
         </div>
@@ -72,39 +67,43 @@ export async function mountTownMapEditor(ctx, host) {
   const tooltip = host.querySelector('#tme-tooltip');
   const imgElement = host.querySelector('#tme-map-img');
 
-  try {
-    const pbsText = await ctx.fs.readProjectFile("PBS/town_map.txt");
-    regions = parseTownMap(pbsText);
-    
-    const select = host.querySelector('#tme-region-select');
-    const updateSelect = () => {
-      select.innerHTML = '';
-      regions.forEach((r, index) => {
-        const option = document.createElement('option');
-        option.value = index;
-        option.textContent = `[${r.id}] ${r.name || 'Unnamed'}`;
-        select.appendChild(option);
-      });
-      if (activeRegion) select.value = regions.indexOf(activeRegion);
-    };
-    
-    updateSelect();
-    host.updateRegionSelect = updateSelect;
+  // La carga del PBS es async pero la hacemos internamente para que
+  // mountTownMapEditor sea síncrona y pueda retornar cleanup de inmediato.
+  (async () => {
+    try {
+      const pbsText = await ctx.fs.readProjectFile("PBS/town_map.txt");
+      regions = parseTownMap(pbsText);
+      
+      const select = host.querySelector('#tme-region-select');
+      const updateSelect = () => {
+        select.innerHTML = '';
+        regions.forEach((r, index) => {
+          const option = document.createElement('option');
+          option.value = index;
+          option.textContent = `[${r.id}] ${r.name || 'Unnamed'}`;
+          select.appendChild(option);
+        });
+        if (activeRegion) select.value = regions.indexOf(activeRegion);
+      };
+      
+      updateSelect();
+      host.updateRegionSelect = updateSelect;
 
-    select.addEventListener('change', (e) => {
-      activeRegion = regions[e.target.value];
-      selectedPoint = null;
-      zoom = 1;
-      loadRegionImage(activeRegion);
-    });
-    
-    if (regions.length > 0) {
-      activeRegion = regions[0];
-      loadRegionImage(activeRegion);
+      select.addEventListener('change', (e) => {
+        activeRegion = regions[e.target.value];
+        selectedPoint = null;
+        zoom = 1;
+        loadRegionImage(activeRegion);
+      });
+      
+      if (regions.length > 0) {
+        activeRegion = regions[0];
+        loadRegionImage(activeRegion);
+      }
+    } catch (err) {
+      ctx.ui.showToast({ message: "PBS/town_map.txt not found", level: "error" });
     }
-  } catch (err) {
-    ctx.ui.showToast({ message: "PBS/town_map.txt not found", level: "error" });
-  }
+  })();
 
   imgElement.onload = () => {
     imgWidth = imgElement.naturalWidth;
@@ -265,7 +264,6 @@ export async function mountTownMapEditor(ctx, host) {
             <input type="text" id="pt-poi" value="${selectedPoint.poi}" placeholder="" style="width: 100%; box-sizing: border-box; background: var(--input-bg); color: var(--text-primary); border: 1px solid var(--border); padding: 6px; border-radius: 4px; margin-top: 4px;" />
           </div>
           
-          <!-- FLY DESTINATION SECTION -->
           <div>
             <label style="font-size: 11px; font-weight: bold; color: var(--text-secondary);">FLY DESTINATION</label>
             ${hasFly ? `
@@ -282,7 +280,6 @@ export async function mountTownMapEditor(ctx, host) {
             `}
           </div>
 
-          <!-- SWITCH SECTION -->
           <div>
             <label style="font-size: 11px; font-weight: bold; color: var(--text-secondary);">SWITCH</label>
             ${hasSwitch ? `
@@ -306,7 +303,7 @@ export async function mountTownMapEditor(ctx, host) {
       `;
       propertiesPanel.innerHTML = html;
     }
-
+    
     // --- EVENT LISTENERS SIDEBAR ---
 
     host.querySelector('#reg-name').addEventListener('input', (e) => {
@@ -389,7 +386,19 @@ export async function mountTownMapEditor(ctx, host) {
   viewport.addEventListener('mousedown', (e) => {
     if (!activeRegion) return;
 
+
     if (e.button === 1 || e.altKey) {
+      e.preventDefault(); 
+      isPanning = true;
+      lastMouseX = e.clientX;
+      lastMouseY = e.clientY;
+      viewport.style.cursor = 'grabbing';
+      return;
+    }
+
+
+    if (e.button === 0 && isSpaceDown) {
+      e.preventDefault();
       isPanning = true;
       lastMouseX = e.clientX;
       lastMouseY = e.clientY;
@@ -414,8 +423,9 @@ export async function mountTownMapEditor(ctx, host) {
 
   const onMouseMove = (e) => {
     if (isPanning) {
-      viewport.scrollLeft -= e.clientX - lastMouseX;
-      viewport.scrollTop -= e.clientY - lastMouseY;
+
+      viewport.scrollLeft -= (e.clientX - lastMouseX);
+      viewport.scrollTop  -= (e.clientY - lastMouseY);
       lastMouseX = e.clientX;
       lastMouseY = e.clientY;
       return;
@@ -465,6 +475,59 @@ export async function mountTownMapEditor(ctx, host) {
   window.addEventListener('mousemove', onMouseMove);
   window.addEventListener('mouseup', onMouseUp);
 
+
+
+  const onKeyDown = (e) => {
+
+    if (!host.isConnected) return;
+
+
+    if (e.code === 'Space' && !isSpaceDown) {
+
+      if (document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA') {
+        isSpaceDown = true;
+        viewport.style.cursor = 'grab';
+        e.preventDefault(); 
+      }
+    }
+
+    const key = e.key.toLowerCase();
+
+    
+    if (e.ctrlKey && key === 's') {
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+      
+      const saveBtn = host.querySelector('#tme-btn-save');
+      if (saveBtn) saveBtn.click();
+    }
+
+    if (e.key === 'Delete' && selectedPoint) {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+      const deleteBtn = host.querySelector('#pt-delete');
+      if (deleteBtn) deleteBtn.click();
+    }
+  };
+
+  const onKeyUp = (e) => {
+    if (!host.isConnected) return;
+    if (e.code === 'Space') {
+      isSpaceDown = false;
+
+      if (!isPanning) viewport.style.cursor = 'crosshair';
+    }
+  };
+    
+
+  window.addEventListener('keydown', onKeyDown, { capture: true });
+  window.addEventListener('keyup', onKeyUp, { capture: true });
+
+
+  viewport.addEventListener('mouseup', (e) => {
+    if (e.button === 1) e.preventDefault();
+  });
+
   viewport.addEventListener('dblclick', (e) => {
     if (!activeRegion || e.button !== 0 || e.altKey) return;
     const grid = getGridCoords(e);
@@ -496,5 +559,7 @@ export async function mountTownMapEditor(ctx, host) {
     if (blobUrlCache) URL.revokeObjectURL(blobUrlCache);
     window.removeEventListener('mousemove', onMouseMove);
     window.removeEventListener('mouseup', onMouseUp);
+    window.removeEventListener('keydown', onKeyDown, { capture: true });
+    window.removeEventListener('keyup', onKeyUp, { capture: true });
   };
 }
